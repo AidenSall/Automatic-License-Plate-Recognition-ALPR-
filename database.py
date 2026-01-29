@@ -54,40 +54,56 @@ class ALPRDatabase:
 
     def log_detection(self, plate_text, confidence, frame_crop):
         """
-        Saves the image crop to disk and logs the metadata to SQLite.
-        :param plate_text: String result from the OCR engine.
-        :param confidence: The confidence score from the OCR engine.
-        :param frame_crop: The OpenCV image (numpy array) containing the license plate.
+        Logs detection ONLY if the plate hasn't been seen recently.
         """
-        # Ensure the storage directory exists
+        plate_text = plate_text.upper().strip()
+        
+        # 1. Check for duplicates (De-duplication logic)
+        # We query the DB for the most recent sighting of THIS plate
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT timestamp FROM detections 
+                WHERE plate_text = ? 
+                ORDER BY id DESC LIMIT 1
+            ''', (plate_text,))
+            last_entry = cursor.fetchone()
+
+        if last_entry:
+            # Parse the timestamp string back to a datetime object
+            # Format must match the one used in insertion
+            last_seen = datetime.datetime.strptime(last_entry[0], "%Y-%m-%d %H:%M:%S.%f")
+            time_diff = (datetime.datetime.now() - last_seen).total_seconds()
+            
+            # CONSTRAINT: If seen within the last 5 seconds, ignore it.
+            if time_diff < 5:
+                print(f"Skipping duplicate: {plate_text} (seen {time_diff:.1f}s ago)")
+                return
+
+        # 2. Proceed with storage if it's a new or "old enough" detection
         if not os.path.exists(self.img_dir):
             os.makedirs(self.img_dir)
 
-        # Generate a unique filename using microseconds to avoid collisions 
-        # during high-speed traffic (multiple cars per second).
         now = datetime.datetime.now()
         timestamp_str = now.strftime("%Y-%m-%d %H:%M:%S.%f")
         img_filename = f"plate_{now.strftime('%Y%m%d_%H%M%S_%f')}.jpg"
         full_img_path = os.path.join(self.img_dir, img_filename)
 
-        # Write the image to the SD card using OpenCV
         success = cv2.imwrite(full_img_path, frame_crop)
         if not success:
             print(f"Error: Could not write image to {full_img_path}")
             return
 
-        # Insert metadata into the database
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                # Use parameterized queries (?) to prevent SQL injection and handle formatting
                 cursor.execute('''
                     INSERT INTO detections (timestamp, plate_text, confidence, image_path)
                     VALUES (?, ?, ?, ?)
-                ''', (timestamp_str, plate_text.upper().strip(), round(confidence, 4), img_filename))
+                ''', (timestamp_str, plate_text, round(confidence, 4), img_filename))
                 conn.commit()
+                print(f"Logged: {plate_text}")
         except sqlite3.Error as e:
-            # Crucial for debugging: SQLite may fail if the SD card is full or read-only
             print(f"Database insertion error: {e}")
 
     def get_plate_history(self, plate_text):
