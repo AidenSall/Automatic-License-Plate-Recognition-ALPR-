@@ -42,7 +42,15 @@ def main():
     input_width = input_shape[3]
     input_height = input_shape[2]
 
-    cap = cv2.VideoCapture(0)
+    # GStreamer pipeline for Raspberry Pi Ribbon Camera on modern OS
+    gst_pipeline = (
+        "libcamerasrc ! "
+        "video/x-raw, width=640, height=480, framerate=30/1 ! "
+        "videoconvert ! "
+        "appsink"
+    )
+
+    cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
     
     # Pi Optimization 1: Force lower resolution for faster processing
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
