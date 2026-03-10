@@ -1,5 +1,6 @@
 import cv2
-import easyocr
+import pytesseract
+from pytesseract import Output
 import re
 import time
 import numpy as np
@@ -40,8 +41,6 @@ def main():
     input_shape = model_inputs[0].shape
     input_width = input_shape[3]
     input_height = input_shape[2]
-    
-    reader = easyocr.Reader(['en'], gpu=False)
 
     cap = cv2.VideoCapture(0)
     
@@ -128,37 +127,37 @@ def main():
                     plate_crop = frame[y:y+h, x:x+w]
 
                     if plate_crop.size > 0:
-                        # --- EASYOCR PIPELINE ---
-                        ocr_res = reader.readtext(plate_crop)
+                        # --- TESSERACT OCR PIPELINE ---
+                        # 1. Pre-process the crop for Tesseract (Grayscale & Threshold)
+                        gray_plate = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                        _, thresh_plate = cv2.threshold(gray_plate, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
                         
-                        if ocr_res:
-                            largest_area = 0
-                            best_text_candidate = ""
-                            best_confidence = 0.0
+                        # 2. Configure Tesseract to look for a single line of alphanumeric text
+                        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
+                        
+                        # 3. Read the text and confidence scores
+                        ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
+                        
+                        best_text_candidate = ""
+                        best_confidence = 0.0
 
-                            # Find the physically largest text
-                            for detection in ocr_res:
-                                bbox = detection[0]
-                                raw_text = detection[1]
-                                conf = detection[2]
+                        # Find the highest confidence word detected
+                        for i in range(len(ocr_data['text'])):
+                            conf = float(ocr_data['conf'][i]) / 100.0  # Tesseract returns 0-100, we need 0.0-1.0
+                            text = ocr_data['text'][i].strip()
+                            
+                            if conf > best_confidence and len(text) > 0:
+                                best_confidence = conf
+                                best_text_candidate = text
 
-                                width = bbox[2][0] - bbox[0][0]
-                                height = bbox[2][1] - bbox[0][1]
-                                area = width * height
-
-                                if area > largest_area:
-                                    largest_area = area
-                                    best_text_candidate = raw_text
-                                    best_confidence = conf
-
-                            # Validate and Log
-                            if best_confidence >= 0.4:
-                                validated_plate = clean_and_validate_plate(best_text_candidate)
-                                
-                                if validated_plate:
-                                    timestamp = time.strftime('%H:%M:%S')
-                                    print(f"[{timestamp}] Found: {validated_plate} ({best_confidence*100:.1f}%)")
-                                    db.log_detection(validated_plate, best_confidence, plate_crop)
+                        # Validate and Log
+                        if best_confidence >= 0.4:
+                            validated_plate = clean_and_validate_plate(best_text_candidate)
+                            
+                            if validated_plate:
+                                timestamp = time.strftime('%H:%M:%S')
+                                print(f"[{timestamp}] Found: {validated_plate} ({best_confidence*100:.1f}%)")
+                                db.log_detection(validated_plate, best_confidence, plate_crop)
 
     except KeyboardInterrupt:
         print("\nCtrl+C detected. Shutting down gracefully...")
