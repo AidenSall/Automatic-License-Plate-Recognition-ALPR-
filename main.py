@@ -28,7 +28,7 @@ def clean_and_validate_plate(raw_text):
 def main():
     print("Initializing Database and Models... (This takes a moment on a Raspberry Pi)")
     db = ALPRDatabase(db_path="plates.db")
-    model = YOLO("your_model.pt") 
+    model = YOLO("license_plate_detector.pt") 
     reader = easyocr.Reader(['en'], gpu=False)
 
     cap = cv2.VideoCapture(0)
