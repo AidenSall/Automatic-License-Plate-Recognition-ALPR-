@@ -130,9 +130,12 @@ def main():
                 confidences.append(float(conf))
                 
             # --- NON-MAXIMUM SUPPRESSION (Remove Overlaps) ---
-            indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.5, nms_threshold=0.4)
+            # Temporarily lowered threshold to 0.2 to force the model to show its guesses
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.2, nms_threshold=0.4)
             
             if len(indices) > 0:
+                print(f"YOLO saw {len(indices)} potential objects...") # Debug print
+                
                 for i in indices.flatten():
                     x, y, w, h = boxes[i]
                     
@@ -141,6 +144,11 @@ def main():
                     y = max(0, y)
                     w = min(original_width - x, w)
                     h = min(original_height - y, h)
+                    
+                    # --- DRAW THE BOUNDING BOX ---
+                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    cv2.putText(frame, f"Plate: {confidences[i]:.2f}", (x, y-10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     
                     plate_crop = frame[y:y+h, x:x+w]
 
