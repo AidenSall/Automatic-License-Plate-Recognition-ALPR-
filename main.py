@@ -42,15 +42,25 @@ def main():
     input_width = input_shape[3]
     input_height = input_shape[2]
 
-    # GStreamer pipeline for Raspberry Pi Ribbon Camera on modern OS
+    # 1. Define the GStreamer pipeline for the Pi 3 on Trixie
+    # We use 15fps to keep the CPU cool while running YOLO
     gst_pipeline = (
         "libcamerasrc ! "
-        "video/x-raw, width=640, height=480, framerate=30/1 ! "
+        "video/x-raw, width=640, height=480, framerate=15/1 ! "
         "videoconvert ! "
-        "appsink"
+        "videoscale ! "
+        "video/x-raw, width=640, height=480, format=BGR ! "
+        "appsink drop=True"
     )
 
+    # 2. Initialize the Capture
     cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+
+    # 3. Critical Check
+    if not cap.isOpened():
+        print("ERROR: GStreamer pipeline failed to open.")
+        print("Check if another process (like rpicam-hello) is using the camera.")
+        exit()
     
     # Pi Optimization 1: Force lower resolution for faster processing
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
