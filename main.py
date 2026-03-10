@@ -103,24 +103,35 @@ def main():
             predictions = np.squeeze(outputs[0]).T 
             
             original_height, original_width = frame.shape[:2]
-            x_factor = original_width / input_width
-            y_factor = original_height / input_height
+            
+            # Force standard YOLO dimensions to prevent ONNX header misreads
+            model_w, model_h = 640, 640
+            x_factor = original_width / model_w
+            y_factor = original_height / model_h
             
             boxes = []
             confidences = []
             
-            # Filter low confidence before applying scaling math
-            conf_threshold = 0.5
+            # Sync the filter threshold with our NMS threshold
+            conf_threshold = 0.25
             valid_predictions = predictions[predictions[:, 4] > conf_threshold]
             
             for pred in valid_predictions:
                 x_c, y_c, w, h, conf = pred
                 
-                # Scale coordinates back to actual camera resolution
-                x_c *= x_factor
-                y_c *= y_factor
-                w *= x_factor
-                h *= y_factor
+                print(f"RAW MODEL GUESS -> X:{x_c:.3f} Y:{y_c:.3f} Width:{w:.3f} Height:{h:.3f}")
+                
+                # Check if coordinates are percentages (0.0 to 1.0) instead of pixels
+                if w <= 1.5 and h <= 1.5:
+                    x_c *= original_width
+                    y_c *= original_height
+                    w *= original_width
+                    h *= original_height
+                else:
+                    x_c *= x_factor
+                    y_c *= y_factor
+                    w *= x_factor
+                    h *= y_factor
                 
                 # Convert center to top-left
                 x_min = int(x_c - (w / 2))
