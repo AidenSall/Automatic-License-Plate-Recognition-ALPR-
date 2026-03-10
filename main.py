@@ -176,7 +176,13 @@ def main():
                                 timestamp = time.strftime('%H:%M:%S')
                                 print(f"[{timestamp}] Found: {validated_plate} ({best_confidence*100:.1f}%)")
                                 db.log_detection(validated_plate, best_confidence, plate_crop)
-
+# --- VISUAL DEBUGGING ---
+            # Show the live camera feed in a window
+            cv2.imshow("ALPR Live Feed", frame)
+            
+            # Press 'q' on your keyboard to quit the window
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
     except KeyboardInterrupt:
         print("\nCtrl+C detected. Shutting down gracefully...")
     finally:
