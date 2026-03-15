@@ -170,41 +170,41 @@ def main():
                     w, h = min(original_width - x, w), min(original_height - y, h)
                     
                     plate_crop = frame[y:y+h, x:x+w]
-                    
+
                     if plate_crop.size > 0:
                         # --- HEURISTIC VERTICAL CROP ---
+                        # Shave 20% off the top (State name/Stickers) and 15% off the bottom (Motto)
                         crop_h, crop_w = plate_crop.shape[:2]
                         top_trim = int(crop_h * 0.20)
                         bottom_trim = int(crop_h * 0.15)
                         
+                        # Ensure we don't accidentally invert the crop on tiny boxes
                         if crop_h > (top_trim + bottom_trim):
                             core_plate_crop = plate_crop[top_trim:crop_h-bottom_trim, :]
                         else:
-                            core_plate_crop = plate_crop 
+                            core_plate_crop = plate_crop # Fallback if bounding box is extremely skewed
                             
                         # --- TESSERACT OCR PIPELINE ---
-                        # 1. Grayscale Conversion
                         gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                        enhanced_gray = clahe.apply(gray_plate)
+                        blurred = cv2.bilateralFilter(enhanced_gray, d=11, sigmaColor=17, sigmaSpace=17)
                         
-                        # 2. Upscale 3x for Tesseract LSTM geometry constraints
-                        gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-                        
-                        # 3. Gaussian Blur to smooth interpolation artifacts
-                        blurred = cv2.GaussianBlur(gray_plate, (5, 5), 0)
-                        
-                        # 4. Adaptive Thresholding (Scaled for 3x image)
                         thresh_plate_temp = cv2.adaptiveThreshold(
                             blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                            cv2.THRESH_BINARY_INV, 61, 15
+                            cv2.THRESH_BINARY_INV, 19, 10
                         )
                         
-                        # 5. Morphological Close (Bridge gaps in the mountain gradient)
-                        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                        thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
+                        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                        clean_thresh = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_OPEN, kernel)
+                        repair_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                        clean_thresh = cv2.dilate(clean_thresh, repair_kernel, iterations=1)
                         
-                        # 6. Tesseract Configuration
-                        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-                        ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
+                        final_thresh = cv2.bitwise_not(clean_thresh)
+                        thresh_plate = final_thresh
+                        
+                        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
+                        ocr_data = pytesseract.image_to_data(final_thresh, config=custom_config, output_type=Output.DICT)
                         
                         raw_ocr_words = [t.strip() for t in ocr_data['text'] if t.strip()]
                         raw_full_string = " ".join(raw_ocr_words)
@@ -216,18 +216,17 @@ def main():
 
                         for j in range(len(ocr_data['text'])):
                             text = ocr_data['text'][j].strip()
-                            # Cast directly to int to handle Tesseract's '-1' layout blocks
-                            conf_val = int(ocr_data['conf'][j])
+                            conf = float(ocr_data['conf'][j]) / 100.0
                             
-                            # Accept any actual word guess, even if confidence is 0
-                            if conf_val >= 0 and len(text) > 0:
-                                conf = conf_val / 100.0
+                            if len(text) > 0 and conf > 0.0:
                                 clean_chunk = re.sub(r'[^A-Z0-9]', '', text.upper())
                                 if clean_chunk:
                                     best_text_candidate += clean_chunk
+                                    # Weight the confidence by the length of the string chunk
                                     total_conf += (conf * len(clean_chunk)) 
                                     valid_char_count += len(clean_chunk)
                                     
+                        # Calculate weighted average confidence across the whole plate
                         best_confidence = (total_conf / valid_char_count) if valid_char_count > 0 else 0.0
 
                         # --- LOGIC GATES WITH LOGGING ---
@@ -244,7 +243,7 @@ def main():
                                     status_msg = "FAILED_VALIDATION (Syntax/Stop-word/Length)"
                                     save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "VAL", best_confidence)
                             else:
-                                status_msg = f"FAILED_CONFIDENCE (< 40%)"
+                                status_msg = "FAILED_CONFIDENCE (< 40%)"
                                 save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "CONF", best_confidence)
                         else:
                             status_msg = "FAILED_NO_TEXT_FOUND (Tesseract returned empty)"
