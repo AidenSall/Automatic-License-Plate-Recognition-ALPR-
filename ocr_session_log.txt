@@ -1,0 +1,13 @@
+=== ALPR OCR SESSION LOG ===
+[2026-03-14 22:23:26] RAW: 'AZWSS9' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:23:36] RAW: 'AZYSS90' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:23:42] RAW: 'AZWS590' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:23:46] RAW: '' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:23:50] RAW: 'AZVS590' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:23:54] RAW: 'AZWSSR' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:23:58] RAW: 'AZWS590' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:24:02] RAW: 'AZS590' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:24:05] RAW: 'AZS590' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:24:09] RAW: '' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:24:13] RAW: 'AZWSS9O' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
+[2026-03-14 22:24:17] RAW: '' | TARGET: 'NONE' | CONF: 0.0% | STATUS: FAILED_NO_TEXT_FOUND (Tesseract returned empty)
