@@ -204,11 +204,11 @@ def main():
                 total_frames_captured = 0
                 total_frames_processed = 0
 
-            # --- VISUAL DEBUGGING REMOVED FOR ACCURATE HEADLESS BENCHMARKING ---
-            # cv2.imshow("Tesseract Vision (Thresh)", thresh_plate)
-            # cv2.imshow("ALPR Live Feed", frame)
-            # if cv2.waitKey(1) & 0xFF == ord('q'):
-            #     break
+            #--- VISUAL DEBUGGING REMOVED FOR ACCURATE HEADLESS BENCHMARKING ---
+            cv2.imshow("Tesseract Vision (Thresh)", thresh_plate)
+            cv2.imshow("ALPR Live Feed", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
                 
     except KeyboardInterrupt:
         print("\nCtrl+C detected. Shutting down gracefully...")
