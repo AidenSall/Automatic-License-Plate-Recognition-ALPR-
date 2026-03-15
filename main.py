@@ -182,20 +182,27 @@ def main():
                         else:
                             core_plate_crop = plate_crop 
                             
-                        # --- NEW TESSERACT PIPELINE FOR CLEAN CAMERAS ---
-                        # 1. Grayscale
+                        # --- TESSERACT OCR PIPELINE ---
+                        # 1. Grayscale Conversion
                         gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
                         
-                        # 2. Upscale (Tesseract needs characters to be at least 30px tall)
+                        # 2. Upscale 3x for Tesseract LSTM geometry constraints
                         gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                         
-                        # 3. Slight blur to smooth out pixelation from the upscale
+                        # 3. Gaussian Blur to smooth interpolation artifacts
                         blurred = cv2.GaussianBlur(gray_plate, (5, 5), 0)
                         
-                        # 4. Otsu Threshold (Clean binarization for a proper camera feed)
-                        _, thresh_plate = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)
+                        # 4. Adaptive Thresholding (Scaled for 3x image)
+                        thresh_plate_temp = cv2.adaptiveThreshold(
+                            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                            cv2.THRESH_BINARY_INV, 61, 15
+                        )
                         
-                        # 5. Tesseract Configuration
+                        # 5. Morphological Close (Bridge gaps in the mountain gradient)
+                        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                        thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
+                        
+                        # 6. Tesseract Configuration
                         custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
                         ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
                         
