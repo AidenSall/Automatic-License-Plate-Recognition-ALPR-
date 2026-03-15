@@ -80,9 +80,9 @@ def main():
     input_width = input_shape[3]
     input_height = input_shape[2]
 
-    # 1. Define the GStreamer pipeline
+    # 1. Define the GStreamer pipeline - Added awb-mode=auto
     gst_pipeline = (
-        "libcamerasrc ! "
+        "libcamerasrc awb-mode=auto ! "
         "video/x-raw, width=640, height=480, framerate=15/1 ! "
         "videoconvert ! "
         "videoscale ! "
@@ -201,9 +201,21 @@ def main():
 
                     if plate_crop.size > 0:
                         # --- TESSERACT OCR PIPELINE ---
+                        # 1. Convert to Grayscale
                         gray_plate = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
-                        _, thresh_plate = cv2.threshold(gray_plate, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
                         
+                        # 2. Apply Morphological Black Hat
+                        # This extracts dark characters from a lighter background while ignoring large gradients
+                        rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 5))
+                        blackhat = cv2.morphologyEx(gray_plate, cv2.MORPH_BLACKHAT, rectKernel)
+                        
+                        # 3. Threshold the isolated text from the Black Hat result
+                        _, thresh_plate = cv2.threshold(blackhat, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                        
+                        # 4. Invert the image (Tesseract prefers black text on a white background)
+                        thresh_plate = cv2.bitwise_not(thresh_plate)
+                        
+                        # 5. Tesseract Configuration
                         custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
                         ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
                         
