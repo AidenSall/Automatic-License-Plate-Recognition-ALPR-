@@ -73,7 +73,12 @@ def main():
 
     # Pi Optimization 2: Frame Skipping
     frame_skip = 3  # Process 1 out of every 3 frames
-    frame_count = 0
+    total_frames_captured = 0
+    total_frames_processed = 0
+
+    # Metrics Initialization
+    start_time = time.time()
+    evaluation_window = 60.0 # seconds
 
     try:
         while cap.isOpened():
@@ -83,11 +88,20 @@ def main():
                 time.sleep(1)
                 continue
 
-            frame_count += 1
+            total_frames_captured += 1
             
             # Skip frames to give the Raspberry Pi CPU time to breathe
-            if frame_count % frame_skip != 0:
+            if total_frames_captured % frame_skip != 0:
+                # Still check the timer even on skipped frames
+                elapsed_time = time.time() - start_time
+                if elapsed_time >= evaluation_window:
+                    print_performance_metrics(total_frames_captured, total_frames_processed, elapsed_time)
+                    start_time = time.time()
+                    total_frames_captured = 0
+                    total_frames_processed = 0
                 continue
+            
+            total_frames_processed += 1
 
             # --- PRE-PROCESS IMAGE FOR ONNX ---
             img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -119,8 +133,6 @@ def main():
             for pred in valid_predictions:
                 x_c, y_c, w, h, conf = pred
                 
-                print(f"RAW MODEL GUESS -> X:{x_c:.3f} Y:{y_c:.3f} Width:{w:.3f} Height:{h:.3f}")
-                
                 # Check if coordinates are percentages (0.0 to 1.0) instead of pixels
                 if w <= 1.5 and h <= 1.5:
                     x_c *= original_width
@@ -141,12 +153,9 @@ def main():
                 confidences.append(float(conf))
                 
             # --- NON-MAXIMUM SUPPRESSION (Remove Overlaps) ---
-            # Temporarily lowered threshold to 0.2 to force the model to show its guesses
             indices = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.2, nms_threshold=0.4)
             
             if len(indices) > 0:
-                print(f"\n--- YOLO detected {len(indices)} object(s) ---") 
-                
                 for i in indices.flatten():
                     x, y, w, h = boxes[i]
                     
@@ -156,41 +165,21 @@ def main():
                     w = min(original_width - x, w)
                     h = min(original_height - y, h)
                     
-                    # 1. Print exact coordinates to ensure they are on the screen
-                    print(f"Drawing Box -> X:{x} Y:{y} Width:{w} Height:{h}")
-                    
-                    # 2. Draw a thick RED box (BGR format: 0, 0, 255)
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 4)
-                    cv2.putText(frame, f"Conf: {confidences[i]:.2f}", (x, y-10), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                    
                     plate_crop = frame[y:y+h, x:x+w]
 
                     if plate_crop.size > 0:
                         # --- TESSERACT OCR PIPELINE ---
-                        # 1. Pre-process the crop for Tesseract (Grayscale & Threshold)
                         gray_plate = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
                         _, thresh_plate = cv2.threshold(gray_plate, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
                         
-                        # 3. Visually show exactly what image Tesseract is trying to read
-                        cv2.imshow("Tesseract Vision (Thresh)", thresh_plate)
-                        
-                        # 2. Configure Tesseract to look for a single line of alphanumeric text
                         custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
-                        
-                        # 3. Read the text and confidence scores
                         ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
-                        
-                        # 4. Print the raw, unfiltered text Tesseract is guessing
-                        raw_texts = [text for text in ocr_data['text'] if text.strip() != '']
-                        print(f"Raw Tesseract Output: {raw_texts}")
                         
                         best_text_candidate = ""
                         best_confidence = 0.0
 
-                        # Find the highest confidence word detected
                         for j in range(len(ocr_data['text'])):
-                            conf = float(ocr_data['conf'][j]) / 100.0  # Tesseract returns 0-100, we need 0.0-1.0
+                            conf = float(ocr_data['conf'][j]) / 100.0
                             text = ocr_data['text'][j].strip()
                             
                             if conf > best_confidence and len(text) > 0:
@@ -206,20 +195,37 @@ def main():
                                 print(f"[{timestamp}] Found: {validated_plate} ({best_confidence*100:.1f}%)")
                                 db.log_detection(validated_plate, best_confidence, plate_crop)
             
-            # --- VISUAL DEBUGGING ---
-            # Show the live camera feed in a window
-            cv2.imshow("ALPR Live Feed", frame)
-            
-            # Press 'q' on your keyboard to quit the window
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # --- METRICS EVALUATION ---
+            elapsed_time = time.time() - start_time
+            if elapsed_time >= evaluation_window:
+                print_performance_metrics(total_frames_captured, total_frames_processed, elapsed_time)
+                # Reset metrics for next window
+                start_time = time.time()
+                total_frames_captured = 0
+                total_frames_processed = 0
+
+            # --- VISUAL DEBUGGING REMOVED FOR ACCURATE HEADLESS BENCHMARKING ---
+            # cv2.imshow("Tesseract Vision (Thresh)", thresh_plate)
+            # cv2.imshow("ALPR Live Feed", frame)
+            # if cv2.waitKey(1) & 0xFF == ord('q'):
+            #     break
                 
     except KeyboardInterrupt:
         print("\nCtrl+C detected. Shutting down gracefully...")
     finally:
         cap.release()
         cv2.destroyAllWindows()
-        print("Camera released. Goodbye!")
+        print("Camera released. System offline.")
 
+def print_performance_metrics(captured, processed, elapsed):
+    """Prints formatted performance metrics."""
+    fps_captured = captured / elapsed
+    fps_processed = processed / elapsed
+    print("\n" + "="*50)
+    print(f" METRICS OVER LAST {elapsed:.1f} SECONDS")
+    print(f" Frames Captured:     {captured} ({fps_captured:.2f} FPS)")
+    print(f" Frames Processed:    {processed} ({fps_processed:.2f} FPS)")
+    print("="*50 + "\n")
+    
 if __name__ == "__main__":
     main()
