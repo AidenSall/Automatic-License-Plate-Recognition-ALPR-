@@ -80,7 +80,7 @@ def main():
     input_width = input_shape[3]
     input_height = input_shape[2]
 
-    # 1. Define the GStreamer pipeline - Added awb-mode=auto
+    # 1. Define the GStreamer pipeline
     gst_pipeline = (
         "libcamerasrc awb-mode=auto ! "
         "video/x-raw, width=640, height=480, framerate=15/1 ! "
@@ -134,7 +134,7 @@ def main():
                     total_frames_captured = 0
                     total_frames_processed = 0
                 
-                # We still need to render the live feed even on skipped frames
+                # Render the live feed even on skipped frames
                 cv2.imshow("ALPR Live Feed", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -204,20 +204,36 @@ def main():
                         # 1. Convert to Grayscale
                         gray_plate = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
                         
-                        # 2. Apply Morphological Black Hat
-                        # This extracts dark characters from a lighter background while ignoring large gradients
-                        rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 5))
-                        blackhat = cv2.morphologyEx(gray_plate, cv2.MORPH_BLACKHAT, rectKernel)
+                        # 2. CLAHE (Contrast Limited Adaptive Histogram Equalization)
+                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                        enhanced_gray = clahe.apply(gray_plate)
                         
-                        # 3. Threshold the isolated text from the Black Hat result
-                        _, thresh_plate = cv2.threshold(blackhat, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                        # 3. Bilateral Filter
+                        blurred = cv2.bilateralFilter(enhanced_gray, d=11, sigmaColor=17, sigmaSpace=17)
                         
-                        # 4. Invert the image (Tesseract prefers black text on a white background)
-                        thresh_plate = cv2.bitwise_not(thresh_plate)
+                        # 4. Adaptive Thresholding
+                        thresh_plate_temp = cv2.adaptiveThreshold(
+                            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                            cv2.THRESH_BINARY_INV, 19, 10
+                        )
                         
-                        # 5. Tesseract Configuration
+                        # 5. Morphological Opening (Noise removal)
+                        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                        clean_thresh = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_OPEN, kernel)
+                        
+                        # 6. Morphological Dilation (Stroke repair)
+                        repair_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+                        clean_thresh = cv2.dilate(clean_thresh, repair_kernel, iterations=1)
+                        
+                        # 7. Invert back to black text on white background for Tesseract
+                        final_thresh = cv2.bitwise_not(clean_thresh)
+                        
+                        # Map to the variable used by visual debugging and failed read saves
+                        thresh_plate = final_thresh
+                        
+                        # 8. Tesseract Configuration
                         custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
-                        ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
+                        ocr_data = pytesseract.image_to_data(final_thresh, config=custom_config, output_type=Output.DICT)
                         
                         best_text_candidate = ""
                         best_confidence = 0.0
