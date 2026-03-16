@@ -174,8 +174,6 @@ def main():
                         crop_h, crop_w = plate_crop.shape[:2]
                         
                         # --- GEOMETRIC ISOLATION LOGIC ---
-                        # Instead of guessing with contours, aggressively crop the top 20% 
-                        # and bottom 25% to physically remove "WASHINGTON" and "EVERGREEN STATE"
                         y_start = int(crop_h * 0.20)
                         y_end = int(crop_h * 0.75)
                         core_plate_crop = plate_crop[y_start:y_end, 0:crop_w]
@@ -187,34 +185,28 @@ def main():
                             # 1. Upscale
                             gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                             
-                            # 2. Contrast Enhancement (Crucial for WA plates)
-                            # This pushes the light blue mountains to white, while keeping the dark letters black.
-                            # Values above 150 become pure white. 
+                            # 2. Contrast Enhancement
                             _, high_contrast = cv2.threshold(gray_plate, 150, 255, cv2.THRESH_TRUNC)
-                            
-                            # Normalize back to 0-255 range to maximize the difference
                             high_contrast = cv2.normalize(high_contrast, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-                            
-                            # Blur to smooth INTER_CUBIC artifacts
                             blurred = cv2.GaussianBlur(high_contrast, (5, 5), 0)
                             
                             # 3. Standard Polarity Thresholding
-                            # Use THRESH_BINARY so text is BLACK and background is WHITE
-                            # Smaller block size (31) and higher C (15) to aggressively drop remaining background noise
                             thresh_plate_temp = cv2.adaptiveThreshold(
                                 blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                 cv2.THRESH_BINARY, 31, 15
                             )
                             
                             # 4. Morphological Operations
-                            # Because text is now BLACK, we use MORPH_OPEN to remove isolated black noise dots,
-                            # or just minimal closing if characters are still fractured.
                             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
                             thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
                             
                             # Tesseract execution
                             custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
                             ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
+                            
+                            # RE-ADDED: Define the raw string variables for logging
+                            raw_ocr_words = [t.strip() for t in ocr_data['text'] if t.strip()]
+                            raw_full_string = " ".join(raw_ocr_words)
                             
                             # --- CONCATENATED EXTRACTION LOGIC ---
                             best_text_candidate = ""
