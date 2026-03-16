@@ -1,10 +1,12 @@
 import cv2
+import os
+os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+
 import logging
 import re
 import time
 import numpy as np
 import onnxruntime as ort
-import os
 from database import ALPRDatabase
 from paddleocr import PaddleOCR
 
@@ -65,11 +67,12 @@ def main():
     # use_angle_cls=False saves compute since plates are assumed horizontal
     # show_log=False suppresses continuous debug text
     # Suppress PaddleOCR's noisy debug logs
+    # Suppress PaddleOCR's noisy debug logs
     logging.getLogger('ppocr').setLevel(logging.ERROR)
 
-    # Initialize PaddleOCR with the updated V4 API parameters
-    # use_textline_orientation=False replaces use_angle_cls
-    ocr_engine = PaddleOCR(use_textline_orientation=False, lang='en', use_gpu=False)
+    # Barebones initialization to bypass the PaddleX API breaking changes.
+    # It will auto-detect the lack of CUDA and default to the Pi's CPU.
+    ocr_engine = PaddleOCR(lang='en')
 
     gst_pipeline = (
         "libcamerasrc awb-mode=auto ! "
