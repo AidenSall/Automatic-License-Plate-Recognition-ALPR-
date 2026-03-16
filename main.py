@@ -174,7 +174,6 @@ def main():
                         crop_h, crop_w = plate_crop.shape[:2]
                         
                         # --- CONTOUR ISOLATION LOGIC ---
-                        # Fast, small-scale binarization just to find the character shapes
                         gray_small = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
                         blur_small = cv2.GaussianBlur(gray_small, (3, 3), 0)
                         thresh_small = cv2.adaptiveThreshold(
@@ -192,43 +191,42 @@ def main():
                             aspect_ratio = float(cw) / ch
                             area = cw * ch
                             
-                            # Rule: Keep contours that are taller than they are wide, 
-                            # and taller than 25% of the total plate crop height.
                             if 0.15 < aspect_ratio < 1.2 and ch > (0.25 * crop_h) and area > (total_area * 0.02):
                                 valid_contours.append(cnt)
                                 
                         if valid_contours:
-                            # Find the absolute edges of all valid characters combined
                             x_mins = [cv2.boundingRect(c)[0] for c in valid_contours]
                             y_mins = [cv2.boundingRect(c)[1] for c in valid_contours]
                             x_maxs = [cv2.boundingRect(c)[0] + cv2.boundingRect(c)[2] for c in valid_contours]
                             y_maxs = [cv2.boundingRect(c)[1] + cv2.boundingRect(c)[3] for c in valid_contours]
 
-                            # Add 4 pixels of padding to ensure we don't slice the edge of a character
                             min_x = max(0, min(x_mins) - 4)
                             min_y = max(0, min(y_mins) - 4)
                             max_x = min(crop_w, max(x_maxs) + 4)
                             max_y = min(crop_h, max(y_maxs) + 4)
 
-                            # Create the isolated crop containing ONLY the main text
                             core_plate_crop = plate_crop[min_y:max_y, min_x:max_x]
                         else:
-                            # Fallback if the camera is too blurry to find geometric shapes
                             core_plate_crop = plate_crop 
                             
                         # --- TESSERACT OCR PIPELINE ---
-                        # Only upscale and heavily process the isolated character strip
                         if core_plate_crop.size > 0:
                             gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
+                            
+                            # Upscale first
                             gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                            
+                            # Blur to smooth INTER_CUBIC artifacts
                             blurred = cv2.GaussianBlur(gray_plate, (5, 5), 0)
                             
+                            # Adjusted C parameter (10 instead of 15) for less aggressive carving
                             thresh_plate_temp = cv2.adaptiveThreshold(
                                 blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                cv2.THRESH_BINARY_INV, 61, 15
+                                cv2.THRESH_BINARY_INV, 61, 10
                             )
                             
-                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                            # Scaled kernel (7x7) to match the 3x image resize
+                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
                             thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
                             
                             custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
