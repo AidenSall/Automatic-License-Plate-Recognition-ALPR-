@@ -1,12 +1,11 @@
 import cv2
-import pytesseract
-from pytesseract import Output
 import re
 import time
 import numpy as np
 import onnxruntime as ort
-from database import ALPRDatabase
 import os
+from database import ALPRDatabase
+from paddleocr import PaddleOCR
 
 def clean_and_validate_plate(raw_text):
     """
@@ -23,7 +22,7 @@ def clean_and_validate_plate(raw_text):
         
     return cleaned
 
-def save_failed_read(original_crop, thresh_crop, raw_text, reason, conf=0.0):
+def save_failed_read(original_crop, raw_text, reason, conf=0.0):
     save_dir = "failed_reads"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -36,12 +35,8 @@ def save_failed_read(original_crop, thresh_crop, raw_text, reason, conf=0.0):
     filename = f"{reason}_{timestamp}_{safe_text}_c{int(conf*100)}.jpg"
     filepath = os.path.join(save_dir, filename)
     
-    thresh_bgr = cv2.cvtColor(thresh_crop, cv2.COLOR_GRAY2BGR)
-    h, w = original_crop.shape[:2]
-    thresh_bgr = cv2.resize(thresh_bgr, (w, h))
-        
-    debug_img = cv2.hconcat([original_crop, thresh_bgr])
-    cv2.imwrite(filepath, debug_img)
+    # Removed the threshold concatenation since PaddleOCR uses the raw BGR image
+    cv2.imwrite(filepath, original_crop)
 
 def print_performance_metrics(captured, processed, elapsed):
     fps_captured = captured / elapsed
@@ -53,7 +48,7 @@ def print_performance_metrics(captured, processed, elapsed):
     print("="*50 + "\n")
 
 def main():
-    print("Initializing Database and Models... (This takes a moment on a Raspberry Pi)")
+    print("Initializing Database and Models... (This will heavily tax the RAM)")
     db = ALPRDatabase(db_path="plates.db")
     
     model_path = "license_plate_detector.onnx"
@@ -64,6 +59,11 @@ def main():
     input_shape = model_inputs[0].shape
     input_width = input_shape[3]
     input_height = input_shape[2]
+
+    # Initialize PaddleOCR 
+    # use_angle_cls=False saves compute since plates are assumed horizontal
+    # show_log=False suppresses continuous debug text
+    ocr_engine = PaddleOCR(use_angle_cls=False, lang='en', use_gpu=False, show_log=False)
 
     gst_pipeline = (
         "libcamerasrc awb-mode=auto ! "
@@ -84,7 +84,7 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     print("-" * 40)
-    print(f"ALPR System Active. Model Size: {input_width}x{input_height}")
+    print(f"ALPR System Active. YOLO Model Size: {input_width}x{input_height}")
     print("Press 'q' in the video window or Ctrl+C in terminal to quit.")
     print("-" * 40)
 
@@ -104,7 +104,6 @@ def main():
                 time.sleep(1)
                 continue
             
-            thresh_plate = None
             total_frames_captured += 1
             
             if total_frames_captured % frame_skip != 0:
@@ -174,63 +173,41 @@ def main():
                         crop_h, crop_w = plate_crop.shape[:2]
                         
                         # --- GEOMETRIC ISOLATION LOGIC ---
-                        y_start = int(crop_h * 0.20)
-                        y_end = int(crop_h * 0.75)
+                        y_start = int(crop_h * 0.30)
+                        y_end = int(crop_h * 0.80)
                         core_plate_crop = plate_crop[y_start:y_end, 0:crop_w]
                             
-                        # --- TESSERACT OCR PIPELINE ---
+                        # --- PADDLEOCR PIPELINE ---
                         if core_plate_crop.size > 0:
-                            gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
+                            # Pass the raw crop to PaddleOCR
+                            ocr_results = ocr_engine.ocr(core_plate_crop, cls=False)
                             
-                            # 1. Upscale
-                            gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-                            
-                            # 2. Contrast Enhancement
-                            _, high_contrast = cv2.threshold(gray_plate, 150, 255, cv2.THRESH_TRUNC)
-                            high_contrast = cv2.normalize(high_contrast, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-                            blurred = cv2.GaussianBlur(high_contrast, (5, 5), 0)
-                            
-                            # 3. Standard Polarity Thresholding
-                            thresh_plate_temp = cv2.adaptiveThreshold(
-                                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                cv2.THRESH_BINARY, 31, 15
-                            )
-                            
-                            # 4. Morphological Operations
-                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                            thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
-                            
-                            # Tesseract execution
-                            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-                            ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
-                            
-                            # RE-ADDED: Define the raw string variables for logging
-                            raw_ocr_words = [t.strip() for t in ocr_data['text'] if t.strip()]
-                            raw_full_string = " ".join(raw_ocr_words)
-                            
-                            # --- CONCATENATED EXTRACTION LOGIC ---
+                            raw_ocr_words = []
                             best_text_candidate = ""
                             total_conf = 0.0
                             valid_char_count = 0
 
-                            for j in range(len(ocr_data['text'])):
-                                text = ocr_data['text'][j].strip()
-                                conf_val = int(ocr_data['conf'][j])
-                                
-                                if conf_val >= 0 and len(text) > 0:
-                                    conf = conf_val / 100.0
+                            # PaddleOCR returns [[[box], (text, conf)], ...]
+                            # If it finds nothing, it returns [None]
+                            if ocr_results and ocr_results[0]:
+                                for line in ocr_results[0]:
+                                    text = line[1][0]
+                                    conf = line[1][1]
+                                    raw_ocr_words.append(text)
+                                    
                                     clean_chunk = re.sub(r'[^A-Z0-9]', '', text.upper())
                                     if clean_chunk:
                                         best_text_candidate += clean_chunk
                                         total_conf += (conf * len(clean_chunk)) 
                                         valid_char_count += len(clean_chunk)
                                         
+                            raw_full_string = " ".join(raw_ocr_words)
                             best_confidence = (total_conf / valid_char_count) if valid_char_count > 0 else 0.0
 
                             # --- LOGIC GATES WITH LOGGING ---
                             status_msg = ""
                             if best_text_candidate:
-                                if best_confidence >= 0.4:
+                                if best_confidence >= 0.80: # PaddleOCR confidence is typically higher; adjusted threshold
                                     validated_plate = clean_and_validate_plate(best_text_candidate)
                                     if validated_plate:
                                         status_msg = "SUCCESS"
@@ -239,12 +216,12 @@ def main():
                                         db.log_detection(validated_plate, best_confidence, core_plate_crop)
                                     else:
                                         status_msg = "FAILED_VALIDATION (Syntax/Stop-word/Length)"
-                                        save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "VAL", best_confidence)
+                                        save_failed_read(core_plate_crop, best_text_candidate, "VAL", best_confidence)
                                 else:
-                                    status_msg = f"FAILED_CONFIDENCE (< 40%)"
-                                    save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "CONF", best_confidence)
+                                    status_msg = f"FAILED_CONFIDENCE (< 80%)"
+                                    save_failed_read(core_plate_crop, best_text_candidate, "CONF", best_confidence)
                             else:
-                                status_msg = "FAILED_NO_TEXT_FOUND (Tesseract returned empty)"
+                                status_msg = "FAILED_NO_TEXT_FOUND (PaddleOCR returned empty)"
                                 best_text_candidate = "NONE"
 
                             log_timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -261,9 +238,6 @@ def main():
                 total_frames_captured = 0
                 total_frames_processed = 0
 
-            if thresh_plate is not None:
-                cv2.imshow("Tesseract Vision (Thresh)", thresh_plate)
-            
             cv2.imshow("ALPR Live Feed", frame)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
