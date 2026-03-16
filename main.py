@@ -173,67 +173,48 @@ def main():
                     if plate_crop.size > 0:
                         crop_h, crop_w = plate_crop.shape[:2]
                         
-                        # --- CONTOUR ISOLATION LOGIC ---
-                        gray_small = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
-                        blur_small = cv2.GaussianBlur(gray_small, (3, 3), 0)
-                        thresh_small = cv2.adaptiveThreshold(
-                            blur_small, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                            cv2.THRESH_BINARY_INV, 19, 10
-                        )
-                        
-                        contours, _ = cv2.findContours(thresh_small, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        
-                        valid_contours = []
-                        total_area = crop_h * crop_w
-                        
-                        for cnt in contours:
-                            cx, cy, cw, ch = cv2.boundingRect(cnt)
-                            aspect_ratio = float(cw) / ch
-                            area = cw * ch
-                            
-                            if 0.15 < aspect_ratio < 1.2 and ch > (0.25 * crop_h) and area > (total_area * 0.02):
-                                valid_contours.append(cnt)
-                                
-                        if valid_contours:
-                            x_mins = [cv2.boundingRect(c)[0] for c in valid_contours]
-                            y_mins = [cv2.boundingRect(c)[1] for c in valid_contours]
-                            x_maxs = [cv2.boundingRect(c)[0] + cv2.boundingRect(c)[2] for c in valid_contours]
-                            y_maxs = [cv2.boundingRect(c)[1] + cv2.boundingRect(c)[3] for c in valid_contours]
-
-                            min_x = max(0, min(x_mins) - 4)
-                            min_y = max(0, min(y_mins) - 4)
-                            max_x = min(crop_w, max(x_maxs) + 4)
-                            max_y = min(crop_h, max(y_maxs) + 4)
-
-                            core_plate_crop = plate_crop[min_y:max_y, min_x:max_x]
-                        else:
-                            core_plate_crop = plate_crop 
+                        # --- GEOMETRIC ISOLATION LOGIC ---
+                        # Instead of guessing with contours, aggressively crop the top 20% 
+                        # and bottom 25% to physically remove "WASHINGTON" and "EVERGREEN STATE"
+                        y_start = int(crop_h * 0.20)
+                        y_end = int(crop_h * 0.75)
+                        core_plate_crop = plate_crop[y_start:y_end, 0:crop_w]
                             
                         # --- TESSERACT OCR PIPELINE ---
                         if core_plate_crop.size > 0:
                             gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
                             
-                            # Upscale first
+                            # 1. Upscale
                             gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                             
-                            # Blur to smooth INTER_CUBIC artifacts
-                            blurred = cv2.GaussianBlur(gray_plate, (5, 5), 0)
+                            # 2. Contrast Enhancement (Crucial for WA plates)
+                            # This pushes the light blue mountains to white, while keeping the dark letters black.
+                            # Values above 150 become pure white. 
+                            _, high_contrast = cv2.threshold(gray_plate, 150, 255, cv2.THRESH_TRUNC)
                             
-                            # Adjusted C parameter (10 instead of 15) for less aggressive carving
+                            # Normalize back to 0-255 range to maximize the difference
+                            high_contrast = cv2.normalize(high_contrast, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+                            
+                            # Blur to smooth INTER_CUBIC artifacts
+                            blurred = cv2.GaussianBlur(high_contrast, (5, 5), 0)
+                            
+                            # 3. Standard Polarity Thresholding
+                            # Use THRESH_BINARY so text is BLACK and background is WHITE
+                            # Smaller block size (31) and higher C (15) to aggressively drop remaining background noise
                             thresh_plate_temp = cv2.adaptiveThreshold(
                                 blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                cv2.THRESH_BINARY_INV, 61, 10
+                                cv2.THRESH_BINARY, 31, 15
                             )
                             
-                            # Scaled kernel (7x7) to match the 3x image resize
-                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+                            # 4. Morphological Operations
+                            # Because text is now BLACK, we use MORPH_OPEN to remove isolated black noise dots,
+                            # or just minimal closing if characters are still fractured.
+                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
                             thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
                             
+                            # Tesseract execution
                             custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
                             ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
-                            
-                            raw_ocr_words = [t.strip() for t in ocr_data['text'] if t.strip()]
-                            raw_full_string = " ".join(raw_ocr_words)
                             
                             # --- CONCATENATED EXTRACTION LOGIC ---
                             best_text_candidate = ""
