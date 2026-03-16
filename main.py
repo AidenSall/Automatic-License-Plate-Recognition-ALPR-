@@ -14,7 +14,6 @@ def clean_and_validate_plate(raw_text):
     """
     cleaned = re.sub(r'[^A-Z0-9]', '', raw_text.upper())
     
-    # Fallback stop-word removal just in case the crop caught the bottom edge of a word
     stop_words = ["WASHINGTON", "STATE", "EVERGREEN", "WASH", "GTON", "TOIN", "WA"]
     for word in stop_words:
         cleaned = cleaned.replace(word, "")
@@ -170,91 +169,119 @@ def main():
                     w, h = min(original_width - x, w), min(original_height - y, h)
                     
                     plate_crop = frame[y:y+h, x:x+w]
-
+                    
                     if plate_crop.size > 0:
-                        # --- HEURISTIC VERTICAL CROP ---
-                        # Shave 20% off the top (State name/Stickers) and 15% off the bottom (Motto)
                         crop_h, crop_w = plate_crop.shape[:2]
-                        top_trim = int(crop_h * 0.20)
-                        bottom_trim = int(crop_h * 0.15)
                         
-                        # Ensure we don't accidentally invert the crop on tiny boxes
-                        if crop_h > (top_trim + bottom_trim):
-                            core_plate_crop = plate_crop[top_trim:crop_h-bottom_trim, :]
-                        else:
-                            core_plate_crop = plate_crop # Fallback if bounding box is extremely skewed
-                            
-                        # --- TESSERACT OCR PIPELINE ---
-                        gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
-                        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                        enhanced_gray = clahe.apply(gray_plate)
-                        blurred = cv2.bilateralFilter(enhanced_gray, d=11, sigmaColor=17, sigmaSpace=17)
-                        
-                        thresh_plate_temp = cv2.adaptiveThreshold(
-                            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                        # --- CONTOUR ISOLATION LOGIC ---
+                        # Fast, small-scale binarization just to find the character shapes
+                        gray_small = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                        blur_small = cv2.GaussianBlur(gray_small, (3, 3), 0)
+                        thresh_small = cv2.adaptiveThreshold(
+                            blur_small, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                             cv2.THRESH_BINARY_INV, 19, 10
                         )
                         
-                        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-                        clean_thresh = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_OPEN, kernel)
-                        repair_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-                        clean_thresh = cv2.dilate(clean_thresh, repair_kernel, iterations=1)
+                        contours, _ = cv2.findContours(thresh_small, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         
-                        final_thresh = cv2.bitwise_not(clean_thresh)
-                        thresh_plate = final_thresh
+                        valid_contours = []
+                        total_area = crop_h * crop_w
                         
-                        custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
-                        ocr_data = pytesseract.image_to_data(final_thresh, config=custom_config, output_type=Output.DICT)
-                        
-                        raw_ocr_words = [t.strip() for t in ocr_data['text'] if t.strip()]
-                        raw_full_string = " ".join(raw_ocr_words)
-                        
-                        # --- CONCATENATED EXTRACTION LOGIC ---
-                        best_text_candidate = ""
-                        total_conf = 0.0
-                        valid_char_count = 0
-
-                        for j in range(len(ocr_data['text'])):
-                            text = ocr_data['text'][j].strip()
-                            conf = float(ocr_data['conf'][j]) / 100.0
+                        for cnt in contours:
+                            cx, cy, cw, ch = cv2.boundingRect(cnt)
+                            aspect_ratio = float(cw) / ch
+                            area = cw * ch
                             
-                            if len(text) > 0 and conf > 0.0:
-                                clean_chunk = re.sub(r'[^A-Z0-9]', '', text.upper())
-                                if clean_chunk:
-                                    best_text_candidate += clean_chunk
-                                    # Weight the confidence by the length of the string chunk
-                                    total_conf += (conf * len(clean_chunk)) 
-                                    valid_char_count += len(clean_chunk)
-                                    
-                        # Calculate weighted average confidence across the whole plate
-                        best_confidence = (total_conf / valid_char_count) if valid_char_count > 0 else 0.0
+                            # Rule: Keep contours that are taller than they are wide, 
+                            # and taller than 25% of the total plate crop height.
+                            if 0.15 < aspect_ratio < 1.2 and ch > (0.25 * crop_h) and area > (total_area * 0.02):
+                                valid_contours.append(cnt)
+                                
+                        if valid_contours:
+                            # Find the absolute edges of all valid characters combined
+                            x_mins = [cv2.boundingRect(c)[0] for c in valid_contours]
+                            y_mins = [cv2.boundingRect(c)[1] for c in valid_contours]
+                            x_maxs = [cv2.boundingRect(c)[0] + cv2.boundingRect(c)[2] for c in valid_contours]
+                            y_maxs = [cv2.boundingRect(c)[1] + cv2.boundingRect(c)[3] for c in valid_contours]
 
-                        # --- LOGIC GATES WITH LOGGING ---
-                        status_msg = ""
-                        if best_text_candidate:
-                            if best_confidence >= 0.4:
-                                validated_plate = clean_and_validate_plate(best_text_candidate)
-                                if validated_plate:
-                                    status_msg = "SUCCESS"
-                                    timestamp = time.strftime('%H:%M:%S')
-                                    print(f"[{timestamp}] Found: {validated_plate} ({best_confidence*100:.1f}%)")
-                                    db.log_detection(validated_plate, best_confidence, core_plate_crop)
-                                else:
-                                    status_msg = "FAILED_VALIDATION (Syntax/Stop-word/Length)"
-                                    save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "VAL", best_confidence)
-                            else:
-                                status_msg = "FAILED_CONFIDENCE (< 40%)"
-                                save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "CONF", best_confidence)
+                            # Add 4 pixels of padding to ensure we don't slice the edge of a character
+                            min_x = max(0, min(x_mins) - 4)
+                            min_y = max(0, min(y_mins) - 4)
+                            max_x = min(crop_w, max(x_maxs) + 4)
+                            max_y = min(crop_h, max(y_maxs) + 4)
+
+                            # Create the isolated crop containing ONLY the main text
+                            core_plate_crop = plate_crop[min_y:max_y, min_x:max_x]
                         else:
-                            status_msg = "FAILED_NO_TEXT_FOUND (Tesseract returned empty)"
-                            best_text_candidate = "NONE"
+                            # Fallback if the camera is too blurry to find geometric shapes
+                            core_plate_crop = plate_crop 
+                            
+                        # --- TESSERACT OCR PIPELINE ---
+                        # Only upscale and heavily process the isolated character strip
+                        if core_plate_crop.size > 0:
+                            gray_plate = cv2.cvtColor(core_plate_crop, cv2.COLOR_BGR2GRAY)
+                            gray_plate = cv2.resize(gray_plate, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+                            blurred = cv2.GaussianBlur(gray_plate, (5, 5), 0)
+                            
+                            thresh_plate_temp = cv2.adaptiveThreshold(
+                                blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                cv2.THRESH_BINARY_INV, 61, 15
+                            )
+                            
+                            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                            thresh_plate = cv2.morphologyEx(thresh_plate_temp, cv2.MORPH_CLOSE, kernel)
+                            
+                            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+                            ocr_data = pytesseract.image_to_data(thresh_plate, config=custom_config, output_type=Output.DICT)
+                            
+                            raw_ocr_words = [t.strip() for t in ocr_data['text'] if t.strip()]
+                            raw_full_string = " ".join(raw_ocr_words)
+                            
+                            # --- CONCATENATED EXTRACTION LOGIC ---
+                            best_text_candidate = ""
+                            total_conf = 0.0
+                            valid_char_count = 0
 
-                        log_timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-                        log_entry = f"[{log_timestamp}] RAW: '{raw_full_string}' | TARGET: '{best_text_candidate}' | CONF: {best_confidence*100:.1f}% | STATUS: {status_msg}"
-                        session_ocr_log.append(log_entry)
-                        
-                        if status_msg != "SUCCESS":
-                            print(f"[-] Dropped: '{best_text_candidate}' | Reason: {status_msg}")
+                            for j in range(len(ocr_data['text'])):
+                                text = ocr_data['text'][j].strip()
+                                conf_val = int(ocr_data['conf'][j])
+                                
+                                if conf_val >= 0 and len(text) > 0:
+                                    conf = conf_val / 100.0
+                                    clean_chunk = re.sub(r'[^A-Z0-9]', '', text.upper())
+                                    if clean_chunk:
+                                        best_text_candidate += clean_chunk
+                                        total_conf += (conf * len(clean_chunk)) 
+                                        valid_char_count += len(clean_chunk)
+                                        
+                            best_confidence = (total_conf / valid_char_count) if valid_char_count > 0 else 0.0
+
+                            # --- LOGIC GATES WITH LOGGING ---
+                            status_msg = ""
+                            if best_text_candidate:
+                                if best_confidence >= 0.4:
+                                    validated_plate = clean_and_validate_plate(best_text_candidate)
+                                    if validated_plate:
+                                        status_msg = "SUCCESS"
+                                        timestamp = time.strftime('%H:%M:%S')
+                                        print(f"[{timestamp}] Found: {validated_plate} ({best_confidence*100:.1f}%)")
+                                        db.log_detection(validated_plate, best_confidence, core_plate_crop)
+                                    else:
+                                        status_msg = "FAILED_VALIDATION (Syntax/Stop-word/Length)"
+                                        save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "VAL", best_confidence)
+                                else:
+                                    status_msg = f"FAILED_CONFIDENCE (< 40%)"
+                                    save_failed_read(core_plate_crop, thresh_plate, best_text_candidate, "CONF", best_confidence)
+                            else:
+                                status_msg = "FAILED_NO_TEXT_FOUND (Tesseract returned empty)"
+                                best_text_candidate = "NONE"
+
+                            log_timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                            log_entry = f"[{log_timestamp}] RAW: '{raw_full_string}' | TARGET: '{best_text_candidate}' | CONF: {best_confidence*100:.1f}% | STATUS: {status_msg}"
+                            session_ocr_log.append(log_entry)
+                            
+                            if status_msg != "SUCCESS":
+                                print(f"[-] Dropped: '{best_text_candidate}' | Reason: {status_msg}")
             
             elapsed_time = time.time() - start_time
             if elapsed_time >= evaluation_window:
@@ -277,7 +304,6 @@ def main():
         cap.release()
         cv2.destroyAllWindows()
         
-        # Write the session log to disk on exit
         if session_ocr_log:
             log_filename = "ocr_session_log.txt"
             with open(log_filename, "w") as f:
