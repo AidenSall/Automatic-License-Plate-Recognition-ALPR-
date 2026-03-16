@@ -1,4 +1,5 @@
 import cv2
+import logging
 import re
 import time
 import numpy as np
@@ -63,7 +64,12 @@ def main():
     # Initialize PaddleOCR 
     # use_angle_cls=False saves compute since plates are assumed horizontal
     # show_log=False suppresses continuous debug text
-    ocr_engine = PaddleOCR(use_angle_cls=False, lang='en', use_gpu=False, show_log=False)
+    # Suppress PaddleOCR's noisy debug logs
+    logging.getLogger('ppocr').setLevel(logging.ERROR)
+
+    # Initialize PaddleOCR with the updated V4 API parameters
+    # use_textline_orientation=False replaces use_angle_cls
+    ocr_engine = PaddleOCR(use_textline_orientation=False, lang='en', use_gpu=False)
 
     gst_pipeline = (
         "libcamerasrc awb-mode=auto ! "
